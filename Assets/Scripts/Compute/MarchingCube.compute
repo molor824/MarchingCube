@@ -1,0 +1,79 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+#include "MarchingCubeLookupTables.compute"
+
+struct Triangle
+{
+    float3 a;
+    float3 b;
+    float3 c;
+};
+
+RWStructuredBuffer<float> voxels;
+AppendStructuredBuffer<Triangle> triangles;
+float isoLevel = 0.5;
+int3 dimension; // size of the voxel
+
+float3 lerpVertex(float3 edge, float val, float3 edge1, float val1)
+{
+    return edge + (isoLevel - val) * (edge1 - edge) / (val1 - val);
+}
+
+[numthreads(8,8,8)]
+void CSMain (int3 id : SV_DispatchThreadID)
+{
+    if ((id.x + 1) >= dimension.x || (id.y + 1) >= dimension.y || (id.z + 1) >= dimension.z) return;
+
+    const int zAxis = dimension.x; // steps per z axis
+    const int yAxis = dimension.x * dimension.z; // steps per y axis
+    const int currentIndex = id.x + id.z * zAxis + id.y * yAxis;
+    const float crntVoxel[8] = {
+        voxels[currentIndex],
+        voxels[currentIndex + 1],
+        voxels[currentIndex + 1 + zAxis],
+        voxels[currentIndex + zAxis],
+        voxels[currentIndex + yAxis],
+        voxels[currentIndex + yAxis + 1],
+        voxels[currentIndex + yAxis + 1 + zAxis],
+        voxels[currentIndex + yAxis + zAxis],
+    };
+    const float3 crntVertex[8] = {
+        float3(0, 0, 0),
+        float3(1, 0, 0),
+        float3(1, 0, 1),
+        float3(0, 0, 1),
+        float3(0, 1, 0),
+        float3(1, 1, 0),
+        float3(1, 1, 1),
+        float3(0, 1, 1),
+    };
+    const float3 worldPos = (float3)id;
+
+    int cubeIndex = 0;
+
+    if (crntVoxel[0] < isoLevel) cubeIndex |= 1;
+    if (crntVoxel[1] < isoLevel) cubeIndex |= 2;
+    if (crntVoxel[2] < isoLevel) cubeIndex |= 4;
+    if (crntVoxel[3] < isoLevel) cubeIndex |= 8;
+    if (crntVoxel[4] < isoLevel) cubeIndex |= 16;
+    if (crntVoxel[5] < isoLevel) cubeIndex |= 32;
+    if (crntVoxel[6] < isoLevel) cubeIndex |= 64;
+    if (crntVoxel[7] < isoLevel) cubeIndex |= 128;
+
+    const int edges[16] = triTable[cubeIndex];
+
+    for (int i = 0; edges[i] != -1; i += 3)
+    {
+        const int e0[2] = edgeConnections[edges[i]];
+        const int e1[2] = edgeConnections[edges[i + 1]];
+        const int e2[2] = edgeConnections[edges[i + 2]];
+
+        Triangle tri;
+        tri.a = lerpVertex(crntVertex[e0[0]], crntVoxel[e0[0]], crntVertex[e0[1]], crntVoxel[e0[1]]) + worldPos;
+        tri.b = lerpVertex(crntVertex[e1[0]], crntVoxel[e1[0]], crntVertex[e1[1]], crntVoxel[e1[1]]) + worldPos;
+        tri.c = lerpVertex(crntVertex[e2[0]], crntVoxel[e2[0]], crntVertex[e2[1]], crntVoxel[e2[1]]) + worldPos;
+
+        triangles.Append(tri);
+    }
+}
