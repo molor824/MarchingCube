@@ -8,17 +8,18 @@ public class MarchingCubeSetup : MonoBehaviour
     [SerializeField] private float _isoLevel = 0.5f;
     [SerializeField] private Vector3Int _dimension = new(2, 2, 2);
     [SerializeField] private ComputeShader _marchingCubeShader;
-    [SerializeField] private ComputeShader _mergeShader;
+    [SerializeField] private float _vertexSnap = 0.000001f;
 
     private MeshFilter _mesh;
-    
+
     private ComputeBuffer _triangleBuffer;
     private ComputeBuffer _voxelBuffer;
     private ComputeBuffer _countBuffer;
-    private ComputeBuffer _verticesBuffer;
-    private ComputeBuffer _duplicateVerticesBuffer;
-    private ComputeBuffer _indicesBuffer;
-    
+
+    private Dictionary<Vector3Int, int> _vertexDict = new();
+    private List<Vector3> _updatedVertices = new();
+    private List<int> _indices = new();
+
     private int[] _countArr = { 0 };
     private float[] _voxels;
 
@@ -39,15 +40,6 @@ public class MarchingCubeSetup : MonoBehaviour
     {
         return new(index % _dimension.x, index / _dimension.x / _dimension.z, index / _dimension.x % _dimension.z);
     }
-    
-    void OnDrawGizmosSelected()
-    {
-        for (var i = 0; i < _voxels.Length; i++)
-        {
-            Gizmos.color = Color.Lerp(Color.black, Color.white, _voxels[i]);
-            Gizmos.DrawSphere(GetPoint(i), 0.05f);
-        }
-    }
 
     public void NewVoxel(float[] voxels, Vector3Int dimension)
     {
@@ -56,35 +48,21 @@ public class MarchingCubeSetup : MonoBehaviour
 
         _voxels = voxels;
         _dimension = dimension;
-        
+
         _marchingCubeShader.SetInts("dimension", dimension.x, dimension.y, dimension.z);
-        
+
         if (_voxelBuffer == null || voxels.Length != _voxelBuffer.count)
         {
             _voxelBuffer?.Release();
             _triangleBuffer?.Release();
-            _verticesBuffer?.Release();
-            _duplicateVerticesBuffer?.Release();
-            _indicesBuffer?.Release();
-            
+
             _voxelBuffer = new(voxels.Length, sizeof(float));
             _triangleBuffer = new(voxels.Length, sizeof(float) * 9, ComputeBufferType.Append);
 
             var indexLen = voxels.Length * 3;
-            
-            _verticesBuffer = new(indexLen, sizeof(float) * 3);
-            _duplicateVerticesBuffer = new(indexLen, sizeof(int));
-            _indicesBuffer = new(indexLen, sizeof(int));
-            
+
             _marchingCubeShader.SetBuffer(0, "voxels", _voxelBuffer);
             _marchingCubeShader.SetBuffer(0, "triangles", _triangleBuffer);
-
-            if (_mergeShader)
-            {
-                _mergeShader.SetBuffer(0, "indices", _indicesBuffer);
-                _mergeShader.SetBuffer(0, "vertices", _verticesBuffer);
-                _mergeShader.SetBuffer(0, "duplicateVertices", _duplicateVerticesBuffer);
-            }
         }
     }
 
@@ -92,6 +70,7 @@ public class MarchingCubeSetup : MonoBehaviour
     {
         return _voxels[x + z * _dimension.x + y * _dimension.x * _dimension.z];
     }
+
     public void SetVoxel(float val, int x, int y, int z)
     {
         _voxels[x + z * _dimension.x + y * _dimension.x * _dimension.z] = val;
@@ -100,25 +79,25 @@ public class MarchingCubeSetup : MonoBehaviour
     public void Start()
     {
         if (_mesh) return; // called start already
-        
+
         _mesh = GetComponent<MeshFilter>();
 
         _countBuffer = new ComputeBuffer(1, sizeof(int), ComputeBufferType.IndirectArguments);
-        
+
         NewVoxel(new float[_dimension.x * _dimension.y * _dimension.z], _dimension);
-        
+
         IsoLevel = _isoLevel;
     }
 
     public Mesh GenerateMesh()
     {
         var mesh = _mesh.mesh;
-        
+
         mesh.Clear();
-        
+
         _triangleBuffer.SetCounterValue(0);
         _voxelBuffer.SetData(_voxels);
-        
+
         _marchingCubeShader.GetKernelThreadGroupSizes(0, out var x, out var y, out var z);
         _marchingCubeShader.Dispatch(
             0,
@@ -126,56 +105,48 @@ public class MarchingCubeSetup : MonoBehaviour
             (_dimension.y + (int)y - 1) / (int)y,
             (_dimension.z + (int)z - 1) / (int)z
         );
-        
+
         ComputeBuffer.CopyCount(_triangleBuffer, _countBuffer, 0);
         _countBuffer.GetData(_countArr);
-        
+
         if (_countArr[0] == 0) return mesh;
 
         var indexLen = _countArr[0] * 3;
-        
-        var indices = new int[indexLen];
+
         var vertices = new Vector3[indexLen];
-        
+
         _triangleBuffer.GetData(vertices, 0, 0, indexLen);
-        _verticesBuffer.SetData(vertices);
+        
+        _vertexDict.Clear();
+        _updatedVertices.Clear();
+        _indices.Clear();
 
-        if (!_mergeShader)
+        int i = 0;
+        foreach (var vertex in vertices)
         {
-            for (int i = 0; i < indexLen; i++) indices[i] = i;
-            
-            mesh.vertices = vertices;
-            mesh.SetIndices(indices, MeshTopology.Triangles, 0);
-            mesh.RecalculateNormals();
-            
-            return mesh;
-        }
-        
-        _mergeShader.SetInt("indexLen", indexLen);
-        _mergeShader.GetKernelThreadGroupSizes(0, out x, out _, out _);
-        _mergeShader.Dispatch(0, (indexLen + (int)x - 1) / (int)x, 1, 1);
-        
-        _indicesBuffer.GetData(indices);
-        
-        ComputeBuffer.CopyCount(_duplicateVerticesBuffer, _countBuffer, 0);
-        _countBuffer.GetData(_countArr);
-
-        var duplicates = new int[_countArr[0]];
-        
-        _duplicateVerticesBuffer.GetData(duplicates, 0, 0, _countArr[0]);
-        
-        foreach (var duplicate in duplicates)
-        {
-            for (var i = duplicate; i < indexLen; i++)
+            var snappedVertex = new Vector3Int(
+                Mathf.RoundToInt(vertex.x / _vertexSnap),
+                Mathf.RoundToInt(vertex.y / _vertexSnap),
+                Mathf.RoundToInt(vertex.z / _vertexSnap)
+            );
+            if (_vertexDict.TryGetValue(snappedVertex, out var index))
             {
-                if (i < indexLen - 1) vertices[i] = vertices[i + 1];
-                indices[i]--;
+                _indices.Add(index);
+                continue;
             }
+            
+            _indices.Add(i);
+            _vertexDict.Add(snappedVertex, i);
+            _updatedVertices.Add(vertex);
+            
+            i++;
         }
-        
-        mesh.vertices = vertices.AsSpan(0, vertices.Length - duplicates.Length).ToArray();
-        mesh.SetIndices(indices, MeshTopology.Triangles, 0);
+
+        mesh.SetVertices(_updatedVertices);
+        mesh.SetIndices(_indices, MeshTopology.Triangles, 0);
+        mesh.RecalculateBounds();
         mesh.RecalculateNormals();
+        mesh.RecalculateTangents();
 
         return mesh;
     }

@@ -26,6 +26,10 @@
 # Visual Studio cache directory
 .vs/
 
+# Bunch of IDE ignores
+.idea
+.vscode
+
 # Gradle cache directory
 .gradle/
 
@@ -51,6 +55,7 @@ ExportedObj/
 *.pidb.meta
 *.pdb.meta
 *.mdb.meta
+*.meta
 
 # Unity3D generated file on crash reports
 sysinfo.txt
