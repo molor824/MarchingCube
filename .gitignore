@@ -26,6 +26,9 @@
 # Visual Studio cache directory
 .vs/
 
+.vscode/
+.vsconfig
+
 # Bunch of IDE ignores
 .idea/
 .vscode/

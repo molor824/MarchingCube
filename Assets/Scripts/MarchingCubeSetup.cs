@@ -19,6 +19,7 @@ public class MarchingCubeSetup : MonoBehaviour
     private Dictionary<Vector3Int, int> _vertexDict = new();
     private List<Vector3> _updatedVertices = new();
     private List<int> _indices = new();
+    private Vector3[] _vertices = new Vector3[0x8000];
 
     private int[] _countArr = { 0 };
     private float[] _voxels;
@@ -58,8 +59,6 @@ public class MarchingCubeSetup : MonoBehaviour
 
             _voxelBuffer = new(voxels.Length, sizeof(float));
             _triangleBuffer = new(voxels.Length, sizeof(float) * 9, ComputeBufferType.Append);
-
-            var indexLen = voxels.Length * 3;
 
             _marchingCubeShader.SetBuffer(0, "voxels", _voxelBuffer);
             _marchingCubeShader.SetBuffer(0, "triangles", _triangleBuffer);
@@ -113,17 +112,17 @@ public class MarchingCubeSetup : MonoBehaviour
 
         var indexLen = _countArr[0] * 3;
 
-        var vertices = new Vector3[indexLen];
+        if (_vertices.Length < indexLen) { _vertices = new Vector3[indexLen * 2]; Debug.Log($"Resized vertices to {indexLen * 2}"); }
 
-        _triangleBuffer.GetData(vertices, 0, 0, indexLen);
-        
+        _triangleBuffer.GetData(_vertices, 0, 0, indexLen);
+
         _vertexDict.Clear();
         _updatedVertices.Clear();
         _indices.Clear();
 
-        int i = 0;
-        foreach (var vertex in vertices)
+        for (var i = 0; i < indexLen; i++)
         {
+            var vertex = _vertices[i];
             var snappedVertex = new Vector3Int(
                 Mathf.RoundToInt(vertex.x / _vertexSnap),
                 Mathf.RoundToInt(vertex.y / _vertexSnap),
@@ -132,14 +131,14 @@ public class MarchingCubeSetup : MonoBehaviour
             if (_vertexDict.TryGetValue(snappedVertex, out var index))
             {
                 _indices.Add(index);
-                continue;
             }
-            
-            _indices.Add(i);
-            _vertexDict.Add(snappedVertex, i);
-            _updatedVertices.Add(vertex);
-            
-            i++;
+            else
+            {
+                index = _updatedVertices.Count;
+                _indices.Add(index);
+                _vertexDict.Add(snappedVertex, index);
+                _updatedVertices.Add(vertex);
+            }
         }
 
         mesh.SetVertices(_updatedVertices);
